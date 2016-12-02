@@ -388,7 +388,6 @@ static void update_time() {
 
   // if it is an hour boundary, re-calculate the sun and moon ephemeris
   if (tick_time->tm_min == 0) {
-    psleep(5000); // wait 5 seconds after the hour before re-calculating
     // re-calculate skypaths
     redo_sky_paths();
     // load a moon image (maybe a new one)
@@ -447,11 +446,13 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   // Draw lunar path
   float curr_elev, curr_azi, next_azi;
   for (i=0;i<24;i++) {
-    curr_azi = fmod_pebble(lunar_azi[i] - solar_azi[0],360);
-    next_azi = fmod_pebble(lunar_azi[i+1] - solar_azi[0],360);
-    point1 = GPoint(hour_to_xpixel(curr_azi/15),angle_to_ypixel(lunar_elev[i]));
-    point2 = GPoint(hour_to_xpixel(next_azi/15),angle_to_ypixel(lunar_elev[i+1]));
-    if ((lunar_elev[i]>0)||(lunar_elev[i+1]>0)) graphics_draw_line(ctx, point1, point2);
+    curr_azi = fmod_pebble(lunar_azi[i]+15*i - solar_azi[i],360);
+    next_azi = fmod_pebble(lunar_azi[i+1]+15*(i+1) - solar_azi[i+1],360);
+    if (next_azi > curr_azi) { // needed to prevent "wrap around"
+      point1 = GPoint(hour_to_xpixel(curr_azi/15),angle_to_ypixel(lunar_elev[i]));
+      point2 = GPoint(hour_to_xpixel((curr_azi+next_azi)/(2*15)),angle_to_ypixel((lunar_elev[i+1]+lunar_elev[i])/2));
+      if ((lunar_elev[i]>0)||(lunar_elev[i+1]>0)) graphics_draw_line(ctx, point1, point2);      
+    }
   }
   
   // Calculate sun position
@@ -482,7 +483,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
 
 
   curr_elev = lunar_elev[hour] + frac_hour * (lunar_elev[hour+1]-lunar_elev[hour]);
-  curr_azi = lunar_azi[hour] + frac_hour * (lunar_azi[hour+1]-lunar_azi[hour]);  
+  curr_azi = lunar_azi[hour] + frac_hour * 15;  
   curr_azi = fmod_pebble(curr_azi,360);
   if (round_to_int(curr_elev) != settings.curr_lunar_elev_int) {
     settings.curr_lunar_elev_int = round_to_int(curr_elev);
@@ -498,7 +499,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   
   // offset for the midnight azimuth offset
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Azi offset %d", (int)fmod_pebble(solar_azi[0],360));
-  curr_azi = curr_azi - solar_azi[0];  // for display purposes
+  curr_azi = curr_azi - solar_azi[hour] + 15*hour;  // for display purposes
   curr_azi = fmod_pebble(curr_azi,360);
   
   // If moon is too low, stop lowering its position

@@ -386,15 +386,17 @@ static void update_time() {
     text_layer_set_text(s_info_layer, s_info_buffer);
   }
 
-  // if it is an hour boundary, re-calculate the sun and moon ephemeris
-  if (tick_time->tm_min == 0) {
+  // if it is an 00:01, re-calculate the sun and moon ephemeris
+  if ((tick_time->tm_hour == 0)&&(tick_time->tm_min == 1)) {
     // re-calculate skypaths
     redo_sky_paths();
     // load a moon image (maybe a new one)
     load_moon_image();
     // load a sun image (maybe a new one)
     load_sun_image();
+    APP_LOG(APP_LOG_LEVEL_DEBUG, "Midnight ephemeris");
   }
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "Updated screen");
 }
 
 static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
@@ -410,7 +412,7 @@ int angle_to_ypixel (float angle) {
   // set y scale based upon latitude
   int range = (90 - fabs_pebble(settings.Latitude) + 23.5) * 1.35;  // full graph 135% of the potential range at that lat
   if (range>110) range = 110;
-  int top = (90 - fabs_pebble(settings.Latitude) + 23.5) * 1.05;  // this gives a 20% buffer below the horizon.
+  int top = (90 - fabs_pebble(settings.Latitude) + 23.5) * 1.05;  // this gives a 30% buffer below the horizon.
   if (top>90) top = 90;
   return (int)((top-angle)/range * graph_height);
 }
@@ -464,15 +466,15 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   curr_elev = solar_elev[hour] + frac_hour * (solar_elev[hour+1]-solar_elev[hour]);
   curr_azi = solar_azi[hour] + 15 * frac_hour;
   curr_azi = fmod_pebble(curr_azi,360);
-  bool store_persist_data = false;
-  if (round_to_int(curr_elev) != settings.curr_solar_elev_int) {
-    settings.curr_solar_elev_int = round_to_int(curr_elev);
-    store_persist_data = true;
-  }
-  if (round_to_int(curr_azi) != settings.curr_solar_azi_int) {
-    settings.curr_solar_azi_int = round_to_int(curr_azi);
-    store_persist_data = true;
-  }
+//  bool store_persist_data = false;
+//  if (round_to_int(curr_elev) != settings.curr_solar_elev_int) {
+  settings.curr_solar_elev_int = round_to_int(curr_elev);
+//    store_persist_data = true;
+//  }
+//  if (round_to_int(curr_azi) != settings.curr_solar_azi_int) {
+  settings.curr_solar_azi_int = round_to_int(curr_azi);
+//    store_persist_data = true;
+//  }
  
   // If sun is too low, stop lowering its position
   if (curr_elev < -7) curr_elev = -7;
@@ -481,24 +483,22 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   // Draw the image
   graphics_draw_bitmap_in_rect(ctx, s_bitmap_sun, bitmap_placed);
 
-
   curr_elev = lunar_elev[hour] + frac_hour * (lunar_elev[hour+1]-lunar_elev[hour]);
   curr_azi = lunar_azi[hour] + frac_hour * 15;  
   curr_azi = fmod_pebble(curr_azi,360);
-  if (round_to_int(curr_elev) != settings.curr_lunar_elev_int) {
-    settings.curr_lunar_elev_int = round_to_int(curr_elev);
-    store_persist_data = true;
-  }
-  if (round_to_int(curr_azi) != settings.curr_lunar_azi_int) {
-    settings.curr_lunar_azi_int = round_to_int(curr_azi);
-    store_persist_data = true;
-  }
-  if (store_persist_data) {
-    prv_save_settings(); // write data if changed
-  } 
+//  if (round_to_int(curr_elev) != settings.curr_lunar_elev_int) {
+  settings.curr_lunar_elev_int = round_to_int(curr_elev);
+//    store_persist_data = true;
+//  }
+//  if (round_to_int(curr_azi) != settings.curr_lunar_azi_int) {
+  settings.curr_lunar_azi_int = round_to_int(curr_azi);
+//    store_persist_data = true;
+//  }
+//  if (store_persist_data) {
+//    prv_save_settings(); // write data if changed
+//  } 
   
   // offset for the midnight azimuth offset
-  APP_LOG(APP_LOG_LEVEL_DEBUG, "Azi offset %d", (int)fmod_pebble(solar_azi[0],360));
   curr_azi = curr_azi - solar_azi[hour] + 15*hour;  // for display purposes
   curr_azi = fmod_pebble(curr_azi,360);
   
@@ -587,6 +587,7 @@ static void main_window_unload(Window *window) {
 
 static void init() {
   prv_load_settings();
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "Loaded settings on start");
   
   // Open AppMessage connection
   app_message_register_inbox_received(prv_inbox_received_handler);
@@ -629,6 +630,9 @@ static void init() {
 static void deinit() {
   // Destroy Window
   window_destroy(s_main_window);
+  prv_save_settings(); // write data if changed
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "Stored setting on exit");
+
 }
 
 int main(void) {

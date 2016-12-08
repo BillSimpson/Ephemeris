@@ -17,10 +17,10 @@ static GBitmap *s_bitmap_moon;
 
 // Global variables
 static float graph_width, graph_height;
-static float solar_elev[25];
-static float solar_azi[25];
-static float lunar_elev[25];
-static float lunar_azi[25];
+static float solar_elev[49];
+static float solar_azi[49];
+static float lunar_elev[49];
+static float lunar_azi[49];
 static int lunar_day;
 
 // Persistent storage key
@@ -59,6 +59,7 @@ float rad = 3.14159268 / 180;
 float daySecs = 60 * 60 * 24;
 time_t J2000 = 946684800; // year 2000 in unix time
 float deg_conv = 180 / 3.14159268;
+#define MOONPERIOD_SEC 2551443
 
 float sin_pebble(float angle_radians) {
   int32_t angle_pebble = angle_radians * TRIG_MAX_ANGLE / (2*pi);
@@ -208,12 +209,13 @@ void moonPosition(time_t unixdate, float lat, float lng, float *azi, float *alt)
 // note that in seconds, the lunar period, which is 29.5305882 earth days is
 // lunar period = 2551443 seconds
 
-int moonPhase(time_t unixdate) {
+float moonPhase(time_t unixdate) {
   // 2016-Nov-29 12:19:25 UTC was a new moon
   // 2016-Nov-29 12:19:25 UTC 1480421975 seconds (unix time)
   // so mod the current unix timestamp minus this moon with the lunar period
   // then convert to days by dividing by seconds in a day.
-  return (int)((float)((unixdate-1480421975)%2551443)/(24*3600));
+  return ((float)((unixdate-1480421975)%MOONPERIOD_SEC)/(24*3600));
+
 }
 
 void sky_paths_today(float lat, float lng, float solar_elev[], float solar_azi[], float lunar_elev[], float lunar_azi[]) {
@@ -229,23 +231,34 @@ void sky_paths_today(float lat, float lng, float solar_elev[], float solar_azi[]
   curr_time->tm_hour = 0;
   temp = mktime(curr_time);
 
-  // cycle through 25 hours calculating solar and lunar parameters
-  for (i=0;i<25;i++) {
-    // Solar calculation
-    sunPosition(temp, lat, lng, &sol_azi, &sol_alt);
-    solar_elev[i] = sol_alt * deg_conv;
-    solar_azi[i] = fmod_pebble(((sol_azi + pi) * deg_conv ),360);
-//    APP_LOG(APP_LOG_LEVEL_DEBUG, "hour %d Solar: Elev %d  Azi %d", i, (int)solar_elev[i], (int)solar_azi[i]);
-
+  // cycle through 25 hours for solar and 49 hours for lunar parameters
+  i = 0;
+  bool cont = true;
+  APP_LOG(APP_LOG_LEVEL_DEBUG,"lat,lon [%d:%d]", (int)lat, (int)lng);
+  do {
     // Lunar calculation
     moonPosition(temp, lat, lng, &moon_azi, &moon_alt);
     lunar_elev[i] = moon_alt * deg_conv;
     lunar_azi[i] = fmod_pebble(((moon_azi + pi) * deg_conv ),360);
 //    APP_LOG(APP_LOG_LEVEL_DEBUG, "       Lunar: Elev %d  Azi %d", (int)lunar_elev[i], (int)lunar_azi[i]);
-    
+    // Solar calculation
+    if (i<26) {
+      sunPosition(temp, lat, lng, &sol_azi, &sol_alt);
+      solar_elev[i] = sol_alt * deg_conv;
+      solar_azi[i] = fmod_pebble(((sol_azi + pi) * deg_conv ),360);
+//    APP_LOG(APP_LOG_LEVEL_DEBUG, "hour %d Solar: Elev %d  Azi %d", i, (int)solar_elev[i], (int)solar_azi[i]);
+    }
+    else {
+      if (lunar_elev[i]<0) {
+        cont = false; // after 25 hours, stop when moon sets
+        APP_LOG(APP_LOG_LEVEL_DEBUG, "Stopped at hour %d when moon set", i);
+      }
+    }
     // advance to the next hour
     temp = temp + 3600;
+    i++;
   }
+  while ( (i<49)&& cont);
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Re-calculated sky paths");
 }
 
@@ -301,7 +314,7 @@ static void load_moon_image() {
   // Get a tm structure
   time_t temp = time(NULL);
 
-  lunar_day = moonPhase(temp);
+  lunar_day = (int)moonPhase(temp);
   if (lunar_day < 3)
     s_bitmap_moon = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_MOON1);
   if ((lunar_day < 6) && (lunar_day >= 3)) 
@@ -366,17 +379,18 @@ static void update_time() {
   if (settings.ShowInfo) {
     switch ((tick_time->tm_min) % 3) {
       case 0:
-        snprintf(s_info_buffer, sizeof(s_info_buffer), "Sun [%d:%d]", 
+        snprintf(s_info_buffer, sizeof(s_info_buffer), PBL_IF_ROUND_ELSE("S [%d:%d]","Sun [%d:%d]"), 
                  settings.curr_solar_elev_int, settings.curr_solar_azi_int);
         text_layer_set_text(s_info_layer, s_info_buffer);
         break;
       case 1:
-        snprintf(s_info_buffer, sizeof(s_info_buffer), "Moon [%d:%d]", 
+        snprintf(s_info_buffer, sizeof(s_info_buffer), PBL_IF_ROUND_ELSE("M [%d:%d]","Moon [%d:%d]"),
                  settings.curr_lunar_elev_int, settings.curr_lunar_azi_int);
         text_layer_set_text(s_info_layer, s_info_buffer);
         break;
       case 2:
-        snprintf(s_info_buffer, sizeof(s_info_buffer), "Moon %dd old", moonPhase(temp));
+        snprintf(s_info_buffer, sizeof(s_info_buffer), PBL_IF_ROUND_ELSE("Moon %dd","Moon %dd old"),
+                 (int)moonPhase(temp));
         text_layer_set_text(s_info_layer, s_info_buffer);
         break;
     }
@@ -408,6 +422,21 @@ int hour_to_xpixel (float hour) {
   return (int)(hour/24 * graph_width);
 }
 
+float interp_elev(float curr_elev, float next_elev, float frac_hour) {
+  return(curr_elev + (next_elev-curr_elev)*frac_hour);
+}
+
+float interp_azi(float curr_azi, float next_azi, float frac_hour) {
+  float slope;
+  slope = next_azi - curr_azi;
+  if (slope<0) slope +=360;  // handle "wrap around situation"
+  return(fmod_pebble(curr_azi + slope*frac_hour,360));  
+}
+
+float interp_hour (int hour, float frac_hour, float offset) {
+  return (fmod_pebble(((float)hour + frac_hour - offset),24));
+}
+
 int angle_to_ypixel (float angle) {
   // set y scale based upon latitude
   int range = (90 - fabs_pebble(settings.Latitude) + 23.5) * 1.35;  // full graph 135% of the potential range at that lat
@@ -434,10 +463,9 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   // Set the compositing mode (GCompOpSet is required for transparency)
   graphics_context_set_compositing_mode(ctx, GCompOpSet);
   
-  // Generate the horizon 
-  GRect horizon_box = GRect(hour_to_xpixel(0),angle_to_ypixel(0),hour_to_xpixel(24),7);
-  // Draw the horizon box
-  graphics_draw_bitmap_in_rect(ctx, s_bitmap_horizon, horizon_box);
+  // Get the time and a tm structure
+  time_t temp = time(NULL);
+  struct tm *curr_time = localtime(&temp);
 
   // Draw solar path
   for (i=0;i<24;i++) {
@@ -446,69 +474,58 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     if ((solar_elev[i]>0)||(solar_elev[i+1]>0) ) graphics_draw_line(ctx, point1, point2);
   }
   // Draw lunar path
-  float curr_elev, curr_azi, next_azi;
-  for (i=0;i<24;i++) {
-    curr_azi = fmod_pebble(lunar_azi[i]+15*i - solar_azi[i],360);
-    next_azi = fmod_pebble(lunar_azi[i+1]+15*(i+1) - solar_azi[i+1],360);
-    if (next_azi > curr_azi) { // needed to prevent "wrap around"
-      point1 = GPoint(hour_to_xpixel(curr_azi/15),angle_to_ypixel(lunar_elev[i]));
-      point2 = GPoint(hour_to_xpixel((curr_azi+next_azi)/(2*15)),angle_to_ypixel((lunar_elev[i+1]+lunar_elev[i])/2));
+  float curr_elev, next_elev, curr_azi_hour, next_azi_hour, offset;
+  offset = 24*moonPhase(temp)*(24*3600)/((float)MOONPERIOD_SEC);
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "offset hours: %d", (int)(offset));
+  for (i=(int)offset;i<((int)offset+24);i++) {
+    curr_azi_hour = interp_hour(i,0,offset);
+    next_azi_hour = interp_hour(i,0.5,offset);
+    if (next_azi_hour > curr_azi_hour) { // needed to prevent "wrap around"
+      next_elev = interp_elev(lunar_elev[i],lunar_elev[i+1],0.5);
+      point1 = GPoint(hour_to_xpixel(curr_azi_hour),angle_to_ypixel(lunar_elev[i]));
+      point2 = GPoint(hour_to_xpixel(next_azi_hour),angle_to_ypixel(next_elev));
       if ((lunar_elev[i]>0)||(lunar_elev[i+1]>0)) graphics_draw_line(ctx, point1, point2);      
     }
   }
   
+  // Generate the horizon 
+  GRect horizon_box = GRect(hour_to_xpixel(0),angle_to_ypixel(0),hour_to_xpixel(24),28);
+  // Draw the horizon box
+  graphics_draw_bitmap_in_rect(ctx, s_bitmap_horizon, horizon_box);
+  
   // Calculate sun position
-  // Get a tm structure
-  time_t temp = time(NULL);
-  struct tm *curr_time = localtime(&temp);
   int hour = curr_time->tm_hour;  
   float frac_hour = ((float)curr_time->tm_min)/60;
-  curr_elev = solar_elev[hour] + frac_hour * (solar_elev[hour+1]-solar_elev[hour]);
-  curr_azi = solar_azi[hour] + 15 * frac_hour;
-  curr_azi = fmod_pebble(curr_azi,360);
-//  bool store_persist_data = false;
-//  if (round_to_int(curr_elev) != settings.curr_solar_elev_int) {
+  curr_elev = interp_elev(solar_elev[hour], solar_elev[hour+1],frac_hour);
+  float curr_azi = interp_azi(solar_azi[hour],solar_azi[hour+1],frac_hour);
+  // store solar position
   settings.curr_solar_elev_int = round_to_int(curr_elev);
-//    store_persist_data = true;
-//  }
-//  if (round_to_int(curr_azi) != settings.curr_solar_azi_int) {
   settings.curr_solar_azi_int = round_to_int(curr_azi);
-//    store_persist_data = true;
-//  }
+  // calculate azimuth_hour for plotting purposes, no offset
+  curr_azi_hour = interp_hour(hour,frac_hour,0);
  
   // If sun is too low, stop lowering its position
   if (curr_elev < -7) curr_elev = -7;
   // Get the location to place the sun
-  GRect bitmap_placed = GRect(hour_to_xpixel(hour+frac_hour)-7,angle_to_ypixel(curr_elev)-6,15,13);
+  GRect bitmap_placed = GRect(hour_to_xpixel(curr_azi_hour)-7,angle_to_ypixel(curr_elev)-6,15,13);
   // Draw the image
   graphics_draw_bitmap_in_rect(ctx, s_bitmap_sun, bitmap_placed);
 
-  curr_elev = lunar_elev[hour] + frac_hour * (lunar_elev[hour+1]-lunar_elev[hour]);
-  curr_azi = lunar_azi[hour] + frac_hour * 15;  
-  curr_azi = fmod_pebble(curr_azi,360);
-//  if (round_to_int(curr_elev) != settings.curr_lunar_elev_int) {
+  // Now calculate moon position
+  curr_elev = interp_elev(lunar_elev[hour],lunar_elev[hour+1], frac_hour);
+  curr_azi = interp_azi(lunar_azi[hour],lunar_azi[hour+1],frac_hour);
+  // store lunar position
   settings.curr_lunar_elev_int = round_to_int(curr_elev);
-//    store_persist_data = true;
-//  }
-//  if (round_to_int(curr_azi) != settings.curr_lunar_azi_int) {
   settings.curr_lunar_azi_int = round_to_int(curr_azi);
-//    store_persist_data = true;
-//  }
-//  if (store_persist_data) {
-//    prv_save_settings(); // write data if changed
-//  } 
-  
-  // offset for the midnight azimuth offset
-  curr_azi = curr_azi - solar_azi[hour] + 15*hour;  // for display purposes
-  curr_azi = fmod_pebble(curr_azi,360);
+  // calculate lunar azimuth_hour for plotting purposes, with offset
+  curr_azi_hour = interp_hour(hour,frac_hour,offset);
   
   // If moon is too low, stop lowering its position
   if (curr_elev < -7) curr_elev = -7;
   // Get the location to place the moon
-  GRect bitmap_moon_placed = GRect(hour_to_xpixel(curr_azi/15)-6,angle_to_ypixel(curr_elev)-6,13,13);
+  GRect bitmap_moon_placed = GRect(hour_to_xpixel(curr_azi_hour)-6,angle_to_ypixel(curr_elev)-6,13,13);
   // Draw the image
   graphics_draw_bitmap_in_rect(ctx, s_bitmap_moon, bitmap_moon_placed);
-
 }
 
 static void main_window_load(Window *window) {

@@ -17,10 +17,11 @@ static GBitmap *s_bitmap_moon;
 
 // Global variables
 static float graph_width, graph_height;
-static float solar_elev[49];
-static float solar_azi[49];
-static float lunar_elev[49];
-static float lunar_azi[49];
+static float solar_elev[25];
+static float solar_azi[25];
+static float lunar_elev[25];
+static float lunar_azi[25];
+static float lunar_offset_hour[25];
 static int lunar_day;
 
 // Persistent storage key
@@ -60,6 +61,7 @@ float daySecs = 60 * 60 * 24;
 time_t J2000 = 946684800; // year 2000 in unix time
 float deg_conv = 180 / 3.14159268;
 #define MOONPERIOD_SEC 2551443
+#define SECS_IN_DAY 24*3600
 
 float sin_pebble(float angle_radians) {
   int32_t angle_pebble = angle_radians * TRIG_MAX_ANGLE / (2*pi);
@@ -214,13 +216,13 @@ float moonPhase(time_t unixdate) {
   // 2016-Nov-29 12:19:25 UTC 1480421975 seconds (unix time)
   // so mod the current unix timestamp minus this moon with the lunar period
   // then convert to days by dividing by seconds in a day.
-  return ((float)((unixdate-1480421975)%MOONPERIOD_SEC)/(24*3600));
+  return ((float)((unixdate-1480421975)%MOONPERIOD_SEC)/(SECS_IN_DAY));
 
 }
 
 void sky_paths_today(float lat, float lng, float solar_elev[], float solar_azi[], float lunar_elev[], float lunar_azi[]) {
   float sol_alt, sol_azi, moon_alt, moon_azi;
-  int i;
+  int i, moon_growth = 0;
   
   // get today's date in local time  
   time_t temp = time(NULL);
@@ -231,34 +233,34 @@ void sky_paths_today(float lat, float lng, float solar_elev[], float solar_azi[]
   curr_time->tm_hour = 0;
   temp = mktime(curr_time);
 
-  // cycle through 25 hours for solar and 49 hours for lunar parameters
+  // cycle through 25 hours for solar and lunar parameters
   i = 0;
-  bool cont = true;
   APP_LOG(APP_LOG_LEVEL_DEBUG,"lat,lon [%d:%d]", (int)lat, (int)lng);
   do {
+    // Solar calculation
+    sunPosition(temp, lat, lng, &sol_azi, &sol_alt);
+    solar_elev[i] = sol_alt * deg_conv;
+    solar_azi[i] = fmod_pebble(((sol_azi + pi) * deg_conv ),360);
+//    APP_LOG(APP_LOG_LEVEL_DEBUG, "hour %d Solar: Elev %d  Azi %d", i, (int)solar_elev[i], (int)solar_azi[i]);
     // Lunar calculation
-    moonPosition(temp, lat, lng, &moon_azi, &moon_alt);
+    
+    lunar_offset_hour[i] = 24*moonPhase(temp)*(SECS_IN_DAY)/((float)MOONPERIOD_SEC);
+    if (i==0) {
+      // determine the growth (waxing vs waning moon), waxing = 0, waning = -1
+      if (lunar_offset_hour[i] > 12) moon_growth = -1;
+      else moon_growth = 0;
+    }
+    lunar_offset_hour[i] = lunar_offset_hour[i] + 24*moon_growth;  // if waning, offset by -24 hours
+    moonPosition(temp+(time_t)(3600*lunar_offset_hour[i]), lat, lng, &moon_azi, &moon_alt);
     lunar_elev[i] = moon_alt * deg_conv;
     lunar_azi[i] = fmod_pebble(((moon_azi + pi) * deg_conv ),360);
 //    APP_LOG(APP_LOG_LEVEL_DEBUG, "       Lunar: Elev %d  Azi %d", (int)lunar_elev[i], (int)lunar_azi[i]);
-    // Solar calculation
-    if (i<26) {
-      sunPosition(temp, lat, lng, &sol_azi, &sol_alt);
-      solar_elev[i] = sol_alt * deg_conv;
-      solar_azi[i] = fmod_pebble(((sol_azi + pi) * deg_conv ),360);
-//    APP_LOG(APP_LOG_LEVEL_DEBUG, "hour %d Solar: Elev %d  Azi %d", i, (int)solar_elev[i], (int)solar_azi[i]);
-    }
-    else {
-      if (lunar_elev[i]<0) {
-        cont = false; // after 25 hours, stop when moon sets
-        APP_LOG(APP_LOG_LEVEL_DEBUG, "Stopped at hour %d when moon set", i);
-      }
-    }
+
     // advance to the next hour
     temp = temp + 3600;
     i++;
   }
-  while ( (i<49)&& cont);
+  while (i<25);
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Re-calculated sky paths");
 }
 
@@ -408,7 +410,7 @@ static void update_time() {
     load_moon_image();
     // load a sun image (maybe a new one)
     load_sun_image();
-    APP_LOG(APP_LOG_LEVEL_DEBUG, "Midnight ephemeris");
+    APP_LOG(APP_LOG_LEVEL_DEBUG, "Midnight (00:01) ephemeris");
   }
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Updated screen");
 }
@@ -475,11 +477,9 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   }
   // Draw lunar path
   float curr_elev, next_elev, curr_azi_hour, next_azi_hour, offset;
-  offset = 24*moonPhase(temp)*(24*3600)/((float)MOONPERIOD_SEC);
-  APP_LOG(APP_LOG_LEVEL_DEBUG, "offset hours: %d", (int)(offset));
-  for (i=(int)offset;i<((int)offset+24);i++) {
-    curr_azi_hour = interp_hour(i,0,offset);
-    next_azi_hour = interp_hour(i,0.5,offset);
+  for (i=0;i<24;i++) {
+    curr_azi_hour = interp_hour(i,0,0);
+    next_azi_hour = interp_hour(i,0.5,0);
     if (next_azi_hour > curr_azi_hour) { // needed to prevent "wrap around"
       next_elev = interp_elev(lunar_elev[i],lunar_elev[i+1],0.5);
       point1 = GPoint(hour_to_xpixel(curr_azi_hour),angle_to_ypixel(lunar_elev[i]));
@@ -512,13 +512,19 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   graphics_draw_bitmap_in_rect(ctx, s_bitmap_sun, bitmap_placed);
 
   // Now calculate moon position
-  curr_elev = interp_elev(lunar_elev[hour],lunar_elev[hour+1], frac_hour);
-  curr_azi = interp_azi(lunar_azi[hour],lunar_azi[hour+1],frac_hour);
+  int curr_lunar_offset_hour = (int)lunar_offset_hour[hour];
+  int lunar_hour = (hour - curr_lunar_offset_hour ) % 24;
+  if (lunar_hour<0) lunar_hour = lunar_hour + 24;
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "Moon Hour %d", lunar_hour);
+  float lunar_frac_hour = lunar_offset_hour[hour] - curr_lunar_offset_hour;
+  curr_elev = interp_elev(lunar_elev[lunar_hour],lunar_elev[lunar_hour+1], frac_hour - lunar_frac_hour);
+  curr_azi = interp_azi(lunar_azi[lunar_hour],lunar_azi[lunar_hour+1],frac_hour - lunar_frac_hour);
   // store lunar position
   settings.curr_lunar_elev_int = round_to_int(curr_elev);
   settings.curr_lunar_azi_int = round_to_int(curr_azi);
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "Moon [%d:%d]", settings.curr_lunar_elev_int, settings.curr_lunar_azi_int);
   // calculate lunar azimuth_hour for plotting purposes, with offset
-  curr_azi_hour = interp_hour(hour,frac_hour,offset);
+  curr_azi_hour = interp_hour(hour,frac_hour,lunar_offset_hour[hour]);
   
   // If moon is too low, stop lowering its position
   if (curr_elev < -7) curr_elev = -7;

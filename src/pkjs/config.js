@@ -5,7 +5,7 @@ module.exports = [
   },
   {
     "type": "text",
-    "defaultValue": "Enter location and other selections.  Click SAVE when done."
+    "defaultValue": "Enter location and options.  SAVE when done."
   },
   {
     "type": "section",

@@ -37,16 +37,25 @@ module.exports = [
   {
     "type": "section",
     "items": [
-      {
-        "type": "heading",
-        "defaultValue": "More Settings"
-      },
+ //     {
+ //       "type": "heading",
+ //       "defaultValue": "More Settings"
+ //     },
       {
         "type": "toggle",
         "messageKey": "ShowInfo",
         "label": "Show extra information",
         "defaultValue": true
       },
+//      {   // this slider is to tweak the time. Normally not used
+//        "type": "slider",
+//        "messageKey": "Dayshift",
+//        "defaultValue": "0",
+//        "label": "Shift time by hours",
+//        "min": -24,
+//        "max": 24,
+//        "step": 1
+//      },
     ]
   },
   {

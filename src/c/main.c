@@ -24,6 +24,7 @@ static float lunar_azi[25];
 static int lunar_offset_hour;
 static float lunar_fine_shift;
 static int lunar_day;
+static int info_offset = 0;
 
 // Persistent storage key
 #define SETTINGS_KEY 1
@@ -33,11 +34,12 @@ typedef struct ClaySettings {
   float Latitude;
   float Longitude;
   bool ShowInfo;
+  bool UsePhoneLocation;
+  time_t dayshift_secs;
   int curr_solar_elev_int;
   int curr_solar_azi_int;
   int curr_lunar_elev_int;
   int curr_lunar_azi_int;
-  time_t dayshift_secs;
 } ClaySettings;
 
 // An instance of the struct
@@ -251,7 +253,7 @@ void sky_paths_today(float lat, float lng, float solar_elev[], float solar_azi[]
       lunar_fine_shift = 24*moonPhase(temp)*(SECS_IN_DAY)/((float)MOONPERIOD_SEC);
       lunar_offset_hour = round_to_int(lunar_fine_shift);
       lunar_fine_shift = lunar_fine_shift - (float)lunar_offset_hour;
-      // determine the growth (waxing vs waning moon), waxing = 0, waning = -1
+      // determine the growth (waxing vs waning moon)
       if (lunar_offset_hour > 12) {
         lunar_offset_hour = lunar_offset_hour - 24;  // if waning, offset by -24 hours
         APP_LOG(APP_LOG_LEVEL_DEBUG, "Moon is waning, lunar offset hour %d",lunar_offset_hour);
@@ -285,6 +287,7 @@ static void prv_default_settings() {
   settings.Latitude = 64.8;
   settings.Longitude = -147;
   settings.ShowInfo = true;
+  settings.UsePhoneLocation = false;
 }
 
 // Save the settings to persistent storage
@@ -317,6 +320,12 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
   Tuple *show_info_t = dict_find(iter, MESSAGE_KEY_ShowInfo);
   if(show_info_t) {
     settings.ShowInfo = show_info_t->value->int32 == 1;
+  }
+
+  // Read boolean preferences
+  Tuple *use_phone_location_t = dict_find(iter, MESSAGE_KEY_UsePhoneLocation);
+  if(use_phone_location_t) {
+    settings.UsePhoneLocation = show_info_t->value->int32 == 1;
   }
   
   // The "Dayshift" variable is normally not used, but can be used to test 
@@ -400,7 +409,7 @@ static void update_time() {
   
   // Update the info text -- if we want to show information
   if (settings.ShowInfo) {
-    switch ((tick_time->tm_min) % 3) {
+    switch ((tick_time->tm_min + info_offset) % 4) {
       case 0:
         snprintf(s_info_buffer, sizeof(s_info_buffer), PBL_IF_ROUND_ELSE("S [%d:%d]","Sun [%d:%d]"), 
                  settings.curr_solar_elev_int, settings.curr_solar_azi_int);
@@ -416,6 +425,12 @@ static void update_time() {
                  (int)moonPhase(temp));
         text_layer_set_text(s_info_layer, s_info_buffer);
         break;
+      case 3:
+        snprintf(s_info_buffer, sizeof(s_info_buffer), PBL_IF_ROUND_ELSE("L:%+d,%+d","Loc:%+d,%+d"),
+                 round_to_int(settings.Latitude), round_to_int(settings.Longitude));
+        text_layer_set_text(s_info_layer, s_info_buffer);
+        break;
+
     }
   }
   else {
@@ -519,9 +534,9 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   // Calculate sun position
   int hour = curr_time->tm_hour;  
   float frac_hour = ((float)curr_time->tm_min)/60;
-//  Old method
-//  curr_elev = interp_elev(solar_elev[hour], solar_elev[hour+1],frac_hour);
+// old storage for azimuth data
 //  float curr_azi = interp_azi(solar_azi[hour],solar_azi[hour+1],frac_hour);
+// store more accurate data
   float azi, alt, curr_azi;  
   sunPosition(temp, settings.Latitude, settings.Longitude, &azi, &alt);
   curr_elev = alt * deg_conv;
@@ -530,6 +545,8 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   settings.curr_solar_elev_int = round_to_int(curr_elev);
   settings.curr_solar_azi_int = round_to_int(curr_azi);
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Sun [%d:%d]", settings.curr_solar_elev_int, settings.curr_solar_azi_int);
+//  Old method for elevation
+  curr_elev = interp_elev(solar_elev[hour], solar_elev[hour+1],frac_hour);
   // calculate azimuth_hour for plotting purposes, no offset
   curr_azi_hour = interp_hour(hour,frac_hour,0);
  
@@ -545,7 +562,6 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   if (lunar_hour<0) lunar_hour = lunar_hour + 24;
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Moon Hour %d", lunar_hour);
 // old method
-//  curr_elev = interp_elev(lunar_elev[lunar_hour],lunar_elev[lunar_hour+1], frac_hour);
 //  curr_azi = interp_azi(lunar_azi[lunar_hour],lunar_azi[lunar_hour+1],frac_hour);
   // store lunar position
   moonPosition(temp, settings.Latitude, settings.Longitude, &azi, &alt);
@@ -554,6 +570,8 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   settings.curr_lunar_elev_int = round_to_int(curr_elev);
   settings.curr_lunar_azi_int = round_to_int(curr_azi);
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Moon [%d:%d]", settings.curr_lunar_elev_int, settings.curr_lunar_azi_int);
+  // old method for interpolated altitude
+  curr_elev = interp_elev(lunar_elev[lunar_hour],lunar_elev[lunar_hour+1], frac_hour);
   // calculate lunar azimuth_hour for plotting purposes, with offset
   lunar_hour_shift = lunar_fine_shift + (float)hour * 1/29.5;
   curr_azi_hour = interp_hour(hour,frac_hour,(float)lunar_offset_hour+lunar_hour_shift);
@@ -640,6 +658,12 @@ static void main_window_unload(Window *window) {
   gbitmap_destroy(s_bitmap_moon);
 }
 
+static void accel_tap_handler(AccelAxisType axis, int32_t direction) {
+  // A tap event (shake) occurred
+  info_offset++;
+  update_time();
+}
+
 static void init() {
   prv_load_settings();
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Loaded settings on start");
@@ -647,6 +671,9 @@ static void init() {
   // Open AppMessage connection
   app_message_register_inbox_received(prv_inbox_received_handler);
   app_message_open(128, 128);
+  
+  // Subscribe to tap events -- for shake detection
+  accel_tap_service_subscribe(accel_tap_handler);
 
   // Create main Window element and assign to pointer
   s_main_window = window_create();

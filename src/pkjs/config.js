@@ -14,12 +14,12 @@ module.exports = [
         "type": "heading",
         "defaultValue": "Location"
       },
-      {
-        "type": "toggle",
-        "messageKey": "UsePhoneLocation",
-        "label": "Use phone's location",
-        "defaultValue": false
-      },
+//      {
+//        "type": "toggle",
+//        "messageKey": "UsePhoneLocation",
+//        "label": "Use phone's location",
+//        "defaultValue": false
+//      },
       {
         "type": "slider",
         "messageKey": "Latitude",

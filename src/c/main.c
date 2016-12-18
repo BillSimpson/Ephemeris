@@ -231,7 +231,7 @@ float moonPhase(time_t unixdate) {
 
 }
 
-void sky_paths_today(float lat, float lng, float solar_elev[], float solar_azi[], float lunar_elev[], float lunar_azi[]) {
+void redo_sky_paths() {
   int i;
   
   // get today's date in local time  
@@ -246,10 +246,10 @@ void sky_paths_today(float lat, float lng, float solar_elev[], float solar_azi[]
 
   // cycle through 25 hours for solar and lunar parameters
   i = 0;
-  APP_LOG(APP_LOG_LEVEL_DEBUG,"lat,lon [%d:%d]", (int)lat, (int)lng);
+  APP_LOG(APP_LOG_LEVEL_DEBUG,"lat,lon [%d:%d]", (int)settings.Latitude, (int)settings.Longitude);
   do {
     // Solar calculation
-    sunPosition(temp, lat, lng, &solar_azi[i], &solar_elev[i]);
+    sunPosition(temp, settings.Latitude, settings.Longitude, &solar_azi[i], &solar_elev[i]);
 //    APP_LOG(APP_LOG_LEVEL_DEBUG, "hour %d Solar: Elev %d  Azi %d", i, (int)solar_elev[i], (int)solar_azi[i]);
     // Lunar calculation
     
@@ -261,13 +261,15 @@ void sky_paths_today(float lat, float lng, float solar_elev[], float solar_azi[]
       if (lunar_offset_hour > 12) {
         lunar_offset_hour = lunar_offset_hour - 24;  // if waning, offset by -24 hours
         APP_LOG(APP_LOG_LEVEL_DEBUG, "Moon is waning, lunar offset hour %d",lunar_offset_hour);
+        APP_LOG(APP_LOG_LEVEL_DEBUG, "  Lunar fine shift x100 = %d",(int)(lunar_fine_shift*100));
       }
       else {
         APP_LOG(APP_LOG_LEVEL_DEBUG, "Moon is waxing, lunar offset hour %d",lunar_offset_hour);
+        APP_LOG(APP_LOG_LEVEL_DEBUG, "  Lunar fine shift x100 = %d",(int)(lunar_fine_shift*100));
       }
     }
-    moonPosition(temp+(time_t)(3600*lunar_offset_hour), lat, lng, &lunar_azi[i], &lunar_elev[i]);
-    APP_LOG(APP_LOG_LEVEL_DEBUG, "  Hr %d  Lunar: Elev %d  Azi %d", i, (int)lunar_elev[i], (int)lunar_azi[i]);
+    moonPosition(temp+(time_t)(3600*lunar_offset_hour), settings.Latitude, settings.Longitude, &lunar_azi[i], &lunar_elev[i]);
+//    APP_LOG(APP_LOG_LEVEL_DEBUG, "  Hr %d  Lunar: Elev %d  Azi %d", i, (int)lunar_elev[i], (int)lunar_azi[i]);
 
     // advance to the next hour
     temp = temp + 3600;
@@ -275,11 +277,6 @@ void sky_paths_today(float lat, float lng, float solar_elev[], float solar_azi[]
   }
   while (i<25);
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Re-calculated sky paths");
-}
-
-void redo_sky_paths() {
-  // re-calculate sky paths
-  sky_paths_today(settings.Latitude, settings.Longitude, solar_elev, solar_azi, lunar_elev, lunar_azi);
 }
 
 // code to get settings from phone via pebble-clay
@@ -347,6 +344,9 @@ static void load_moon_image() {
   time_t temp = time(NULL);
   temp += settings.dayshift_secs;
 
+  // destroy old moon image
+  gbitmap_destroy(s_bitmap_moon);
+  // get lunar day and load new image
   lunar_day = (int)moonPhase(temp);
   if (lunar_day < 3)
     s_bitmap_moon = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_MOON1);
@@ -371,6 +371,10 @@ static void load_moon_image() {
 }
 
 static void load_sun_image() {
+  
+  // destroy old sun image      
+    gbitmap_destroy(s_bitmap_sun);
+  // select and load new image
   if (settings.curr_solar_elev_int <= 0) {
     s_bitmap_sun = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_SUN_RIM);
     APP_LOG(APP_LOG_LEVEL_DEBUG, "Selected set sun, elev = %d", settings.curr_solar_elev_int);
@@ -686,10 +690,12 @@ static void init() {
   // calculate sun paths
   redo_sky_paths();
 
-  // get proper moon phase image
+  // load a generic then get proper moon phase image
+  s_bitmap_moon = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_MOON5);
   load_moon_image();
 
-  // get proper sun (set/risen) image
+  // get basic then proper sun (set/risen) image
+  s_bitmap_sun = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_SUN_RIM);
   load_sun_image();
 
   // Make sure the time is displayed from the start

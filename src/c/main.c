@@ -25,6 +25,12 @@ static int lunar_offset_hour;
 static float lunar_fine_shift;
 static int lunar_day;
 static int info_offset = 0;
+static uint32_t lunar_image_id = 0xffff;
+static uint32_t solar_image_id = 0xffff;
+
+// for debouncing
+static bool debounce;
+static AppTimer *debounce_timer;
 
 // Persistent storage key
 #define SETTINGS_KEY 1
@@ -343,46 +349,61 @@ static void load_moon_image() {
   // Get a tm structure
   time_t temp = time(NULL);
   temp += settings.dayshift_secs;
+  uint32_t curr_image_id;
 
-  // destroy old moon image
-  gbitmap_destroy(s_bitmap_moon);
   // get lunar day and load new image
   lunar_day = (int)moonPhase(temp);
+
   if (lunar_day < 3)
-    s_bitmap_moon = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_MOON1);
+    curr_image_id = RESOURCE_ID_IMAGE_MOON1;
   if ((lunar_day < 6) && (lunar_day >= 3)) 
-    s_bitmap_moon = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_MOON2);
+    curr_image_id = RESOURCE_ID_IMAGE_MOON2;
   if ((lunar_day < 10) && (lunar_day >= 6))  // first quarter moon -- 4 days
-    s_bitmap_moon = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_MOON3);
+    curr_image_id = RESOURCE_ID_IMAGE_MOON3;
   if ((lunar_day < 13) && (lunar_day >= 10)) 
-    s_bitmap_moon = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_MOON4);
+    curr_image_id = RESOURCE_ID_IMAGE_MOON4;
   if ((lunar_day < 16) && (lunar_day >= 13)) 
-    s_bitmap_moon = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_MOON5);
+    curr_image_id = RESOURCE_ID_IMAGE_MOON5;
   if ((lunar_day < 19) && (lunar_day >= 16)) 
-    s_bitmap_moon = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_MOON6);
+    curr_image_id = RESOURCE_ID_IMAGE_MOON6;
   if ((lunar_day < 23) && (lunar_day >= 19)) // third quarter moon -- 4 days
-    s_bitmap_moon = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_MOON7);
+    curr_image_id = RESOURCE_ID_IMAGE_MOON7;
   if ((lunar_day < 26) && (lunar_day >= 23)) 
-    s_bitmap_moon = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_MOON8);
+    curr_image_id = RESOURCE_ID_IMAGE_MOON8;
   if (lunar_day >= 26) 
-    s_bitmap_moon = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_MOON9);
+    curr_image_id = RESOURCE_ID_IMAGE_MOON9;
   
-  APP_LOG(APP_LOG_LEVEL_DEBUG, "Selected moon image for lunar day (moon phase 0-29) %d", lunar_day);
+  if (curr_image_id != lunar_image_id) {
+    if (s_bitmap_moon != NULL) {
+      // destroy old moon image  
+      gbitmap_destroy(s_bitmap_moon);
+      APP_LOG(APP_LOG_LEVEL_DEBUG, "Deleted old lunar image");
+    }
+    lunar_image_id = curr_image_id;
+    s_bitmap_moon = gbitmap_create_with_resource(lunar_image_id);
+    APP_LOG(APP_LOG_LEVEL_DEBUG, "Selected moon image for lunar day (moon phase 0-29) %d", lunar_day);
+  }  
 }
 
 static void load_sun_image() {
+  uint32_t curr_image_id;
+
+  // select and solar image
+  if (settings.curr_solar_elev_int <= 0)
+    curr_image_id = RESOURCE_ID_IMAGE_SUN_RIM;
+  else 
+    curr_image_id = RESOURCE_ID_IMAGE_SUN_RISEN;
   
-  // destroy old sun image      
-    gbitmap_destroy(s_bitmap_sun);
-  // select and load new image
-  if (settings.curr_solar_elev_int <= 0) {
-    s_bitmap_sun = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_SUN_RIM);
-    APP_LOG(APP_LOG_LEVEL_DEBUG, "Selected set sun, elev = %d", settings.curr_solar_elev_int);
-  }
-  else {
-    s_bitmap_sun = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_SUN_RISEN);
-    APP_LOG(APP_LOG_LEVEL_DEBUG, "Selected SUN risen, elev = %d", settings.curr_solar_elev_int);
-  }
+  if (curr_image_id != solar_image_id) {
+    if (s_bitmap_sun != NULL) {
+      // destroy old moon image  
+      gbitmap_destroy(s_bitmap_sun);
+      APP_LOG(APP_LOG_LEVEL_DEBUG, "Deleted old solar image");
+    }
+    solar_image_id = curr_image_id;
+    s_bitmap_sun = gbitmap_create_with_resource(solar_image_id);
+    APP_LOG(APP_LOG_LEVEL_DEBUG, "Selected new solar image");
+  }  
 }
 
 static void update_time() {
@@ -649,10 +670,21 @@ static void main_window_unload(Window *window) {
   gbitmap_destroy(s_bitmap_moon);
 }
 
+void timer_callback(){
+  debounce = false;
+}
+
 static void accel_tap_handler(AccelAxisType axis, int32_t direction) {
   // A tap event (shake) occurred
-  info_offset++;
-  update_time();
+  if (!debounce) {
+    info_offset++;
+    update_time();
+    debounce = true;
+    debounce_timer = app_timer_register(1000, timer_callback, NULL);
+    APP_LOG(APP_LOG_LEVEL_DEBUG, "Advance Information due to Accel Tap Event");
+  }
+  else
+    APP_LOG(APP_LOG_LEVEL_DEBUG, "Accel Tap Event during debounce timeout");
 }
 
 static void init() {
@@ -690,12 +722,10 @@ static void init() {
   // calculate sun paths
   redo_sky_paths();
 
-  // load a generic then get proper moon phase image
-  s_bitmap_moon = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_MOON5);
+  // load proper moon phase image
   load_moon_image();
 
-  // get basic then proper sun (set/risen) image
-  s_bitmap_sun = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_SUN_RIM);
+  // get proper sun image
   load_sun_image();
 
   // Make sure the time is displayed from the start

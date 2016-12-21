@@ -12,14 +12,12 @@ module.exports = [
     "items": [
       {
         "type": "heading",
-        "defaultValue": "Location"
+        "defaultValue": "Select Location"
       },
-//      {
-//        "type": "toggle",
-//        "messageKey": "UsePhoneLocation",
-//        "label": "Use phone's location",
-//        "defaultValue": false
-//      },
+      {
+        "type": "text",
+        "defaultValue": "Loading location from phone",
+      },
       {
         "type": "slider",
         "messageKey": "Latitude",
@@ -43,15 +41,15 @@ module.exports = [
   {
     "type": "section",
     "items": [
- //     {
- //       "type": "heading",
- //       "defaultValue": "More Settings"
- //     },
       {
         "type": "toggle",
         "messageKey": "ShowInfo",
         "label": "Show extra information",
         "defaultValue": true
+      },
+      {
+        "type": "text",
+        "defaultValue": "Tap on screen to advance information.  Cycles through Sun, Moon, MoonAge, and Location information"
       },
 //      {   // this slider is to tweak the time. Normally not used
 //        "type": "slider",

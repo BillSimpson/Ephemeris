@@ -16,10 +16,7 @@
             "Latitude",
             "Longitude",
             "ShowInfo",
-            "UsePhoneLocation",
-            "Dayshift",
-            "PhoneLatx100",
-            "PhoneLngx100"
+            "Dayshift"
         ],
         "projectType": "native",
         "resources": {

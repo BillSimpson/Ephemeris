@@ -1,32 +1,40 @@
-// from Katherine Berry's Caltrain App
-// https://github.com/Katharine/pebble-caltrain/blob/master/src/location.js
-
-
 module.exports = function(minified) {
   var clayConfig = this;
 
-  // Converts the lon/lat coordinates into integers for consumption by the app
-  function cleanCoordinate(coord) {
-    return (coord * 100)|0;
-  }
-  
-  clayConfig.on(clayConfig.EVENTS.AFTER_BUILD, function() {
-    
-    console.log("Ready.");
-    navigator.geolocation.getCurrentPosition(
-      .then(function success(pos) {
-        var lng = clayConfig.getItemByMessageKey('PhoneLngx100')
-        lng = cleanCoordinate(pos.coords.longitude)
-        var lat = clayConfig.getItemByMessageKey('PhoneLatx100')
-        lat = cleanCoordinate(pos.coords.latitude)
-        console.log("Got coordinates (" + pos.coords.longitude + ", " + pos.coords.latitude + ")");
-      });
-      .error(function error(err) {
-        console.log('ERROR(' + err.code + '): ' + err.message);
-      });,
-      timeout: 10000,
-      maximumAge: 600000
-    );
-});    
+function locationSuccess(pos) {
+  var pos_data = 'lat = ' + pos.coords.latitude + ' lon = ' + pos.coords.longitude;
+  console.log(pos_data);
+}
 
+function locationError(err) {
+  console.log('Error requesting location!');
+}
+
+// Converts the lon/lat coordinates into integers for consumption by the app
+function cleanCoordinate(coord) {
+  return (coord * 100)|0;
+}   
+  
+function getLocation() {
+  navigator.geolocation.getCurrentPosition(
+    locationSuccess,
+    locationError,
+    {timeout: 15000, maximumAge: 60000}
+  );
+}
+
+// Listen for when the watchface is opened
+Pebble.addEventListener('ready', 
+  function(e) {
+    console.log('PebbleKit JS ready!');
+
+    // Get the initial weather
+    getLocation();
+  }
+);  
+  
+clayConfig.on(clayConfig.EVENTS.AFTER_BUILD, function() {
+  clayConfig.getItemByMessageKey('LocationText').set('gotit');
+  };
+             )
 };

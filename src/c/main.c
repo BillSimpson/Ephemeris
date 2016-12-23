@@ -1,6 +1,6 @@
 #include <pebble.h>
 //
-// First attempt at the skypath (sun and moon) watchface "ephemeris"
+// Watchface "ephemeris"
 //
 static Window *s_main_window;
 // set up text layers for time and date and info information
@@ -17,16 +17,17 @@ static GBitmap *s_bitmap_moon;
 
 // Global variables
 static float graph_width, graph_height;
-static float solar_elev[25];
-static float solar_azi[25];
-static float lunar_elev[25];
-static float lunar_azi[25];
+static int16_t solar_elev_x100[25];
+static int16_t lunar_elev_x100[25];
 static int lunar_offset_hour;
 static float lunar_fine_shift;
 static int lunar_day;
 static int info_offset = 0;
-static uint32_t lunar_image_id = 0xffff;
-static uint32_t solar_image_id = 0xffff;
+static uint16_t lunar_image_id = 0xffff;
+static uint16_t solar_image_id = 0xffff;
+static time_t last_update_unixtime;
+static float last_update_latitude;
+static float last_update_longitude;
 
 // for debouncing
 static bool debounce;
@@ -50,12 +51,14 @@ static AppTimer *debounce_timer;
 #define SECS_IN_DAY 86400
 // day in seconds = 24*60*60
 
+#define NO_AZI 0
+#define CALC_AZI 1
+
 // Define our settings struct
 typedef struct ClaySettings {
   float Latitude;
   float Longitude;
   bool ShowInfo;
-  bool UsePhoneLocation;
   time_t dayshift_secs;
   int curr_solar_elev_int;
   int curr_solar_azi_int;
@@ -120,8 +123,11 @@ float fabs_pebble(float input) {
   return (sign*input);
 }
 
-int round_to_int(float input) {
-  return (int)(input+0.5);
+int round_to_int(float input) {  
+  if (input>0)
+    return (int)(input+0.5);
+  else
+    return (int)(input-0.5);  
 }
 
 float toDays(time_t unixdate) {
@@ -173,19 +179,20 @@ void sunCoords(float d, float *dec, float *ra) {
   *ra = rightAscension(L, 0);
 }
 
-void sunPosition(time_t unixdate, float lat, float lng, float *azi, float *alt) {
+void sunPosition(time_t unixdate, int calc_azi, float *azi, float *alt) {
 // calculates sun position for a given date and latitude/longitude
 
-  float lw  = DEG2RAD * -lng;
-  float phi = DEG2RAD * lat;
+  float lw  = DEG2RAD * -1*settings.Longitude;
+  float phi = DEG2RAD * settings.Latitude;
   float d = toDays(unixdate);
 
   float dec, ra;
   sunCoords(d, &dec, &ra);
   float H  = siderealTime(d, lw) - ra;
 
-  *azi = fmod_pebble(((azimuth(H, phi, dec) + PI) * RAD2DEG ),360);
   *alt = altitude(H, phi, dec) * RAD2DEG;
+  if (calc_azi == CALC_AZI)
+    *azi = fmod_pebble(((azimuth(H, phi, dec) + PI) * RAD2DEG ),360);
 };
 
 // moon calculations, based on http://aa.quae.nl/en/reken/hemelpositie.html formulas
@@ -204,9 +211,9 @@ void moonCoords(float d, float *ra, float *dec) {
   *dec = declination(l, b);
 }
 
-void moonPosition(time_t unixdate, float lat, float lng, float *azi, float *alt) {
-  float lw  = DEG2RAD * -lng;
-  float phi = DEG2RAD * lat;
+void moonPosition(time_t unixdate, int calc_azi, float *azi, float *alt) {
+  float lw  = DEG2RAD * -1*settings.Longitude;
+  float phi = DEG2RAD * settings.Latitude;
   float d = toDays(unixdate);
 
   float ra, dec;
@@ -215,9 +222,9 @@ void moonPosition(time_t unixdate, float lat, float lng, float *azi, float *alt)
   float h = altitude(H, phi, dec);
 // formula 14.1 of "Astronomical Algorithms" 2nd edition by Jean Meeus (Willmann-Bell, Richmond) 1998.
 
-  *azi = fmod_pebble(((azimuth(H, phi, dec) + PI) * RAD2DEG ),360);
   *alt = h * RAD2DEG;
-  
+  if (calc_azi == CALC_AZI)
+    *azi = fmod_pebble(((azimuth(H, phi, dec) + PI) * RAD2DEG ),360);
 };
 
 // Greatly simplified moon phase algorithm from
@@ -239,9 +246,27 @@ float moonPhase(time_t unixdate) {
 
 void redo_sky_paths() {
   int i;
+  float elev, azi;
+  bool recalculate = false;
   
   // get today's date in local time  
   time_t temp = time(NULL);
+
+  // recalculate if old sky paths are more than an hour old or 0.5 degrees shifted location
+  recalculate = ((temp - last_update_unixtime) > 3600);
+  recalculate = recalculate || (fabs_pebble((settings.Latitude - last_update_latitude))>0.5 );
+  recalculate = recalculate || (fabs_pebble((settings.Longitude - last_update_longitude))>0.5 );  
+  
+  if (!recalculate) {
+    APP_LOG(APP_LOG_LEVEL_DEBUG,"avoided recalculation");    
+    return;
+  }
+
+  // store this as last calculation
+  last_update_unixtime = temp;
+  last_update_latitude = settings.Latitude;
+  last_update_longitude = settings.Longitude;  
+  
   temp += settings.dayshift_secs;
   struct tm *curr_time = localtime(&temp);
   // set hour, minute, and second to 0, so that we'll calculate hourly
@@ -252,11 +277,12 @@ void redo_sky_paths() {
 
   // cycle through 25 hours for solar and lunar parameters
   i = 0;
-  APP_LOG(APP_LOG_LEVEL_DEBUG,"lat,lon [%d:%d]", (int)settings.Latitude, (int)settings.Longitude);
+//  APP_LOG(APP_LOG_LEVEL_DEBUG,"lat,lon [%d:%d]", (int)settings.Latitude, (int)settings.Longitude);
   do {
     // Solar calculation
-    sunPosition(temp, settings.Latitude, settings.Longitude, &solar_azi[i], &solar_elev[i]);
-//    APP_LOG(APP_LOG_LEVEL_DEBUG, "hour %d Solar: Elev %d  Azi %d", i, (int)solar_elev[i], (int)solar_azi[i]);
+    sunPosition(temp, NO_AZI, &azi, &elev);
+    solar_elev_x100[i] = (int16_t)(100*elev);
+//    APP_LOG(APP_LOG_LEVEL_DEBUG, "hour %d Solar: Elev %d", i, (int)elev);
     // Lunar calculation
     
     if (i==0) {
@@ -266,16 +292,17 @@ void redo_sky_paths() {
       // determine the growth (waxing vs waning moon)
       if (lunar_offset_hour > 12) {
         lunar_offset_hour = lunar_offset_hour - 24;  // if waning, offset by -24 hours
-        APP_LOG(APP_LOG_LEVEL_DEBUG, "Moon is waning, lunar offset hour %d",lunar_offset_hour);
-        APP_LOG(APP_LOG_LEVEL_DEBUG, "  Lunar fine shift x100 = %d",(int)(lunar_fine_shift*100));
+//        APP_LOG(APP_LOG_LEVEL_DEBUG, "Moon is waning, lunar offset hour %d",lunar_offset_hour);
+//        APP_LOG(APP_LOG_LEVEL_DEBUG, "  Lunar fine shift x100 = %d",(int)(lunar_fine_shift*100));
       }
       else {
-        APP_LOG(APP_LOG_LEVEL_DEBUG, "Moon is waxing, lunar offset hour %d",lunar_offset_hour);
-        APP_LOG(APP_LOG_LEVEL_DEBUG, "  Lunar fine shift x100 = %d",(int)(lunar_fine_shift*100));
+//        APP_LOG(APP_LOG_LEVEL_DEBUG, "Moon is waxing, lunar offset hour %d",lunar_offset_hour);
+//        APP_LOG(APP_LOG_LEVEL_DEBUG, "  Lunar fine shift x100 = %d",(int)(lunar_fine_shift*100));
       }
     }
-    moonPosition(temp+(time_t)(3600*lunar_offset_hour), settings.Latitude, settings.Longitude, &lunar_azi[i], &lunar_elev[i]);
-//    APP_LOG(APP_LOG_LEVEL_DEBUG, "  Hr %d  Lunar: Elev %d  Azi %d", i, (int)lunar_elev[i], (int)lunar_azi[i]);
+    moonPosition(temp+(time_t)(3600*lunar_offset_hour), NO_AZI, NULL, &elev);
+    lunar_elev_x100[i] = (int16_t)(100*elev);
+//    APP_LOG(APP_LOG_LEVEL_DEBUG, "  Hr %d  Lunar: Elev %d", i, (int)elev);
 
     // advance to the next hour
     temp = temp + 3600;
@@ -285,71 +312,11 @@ void redo_sky_paths() {
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Re-calculated sky paths");
 }
 
-// code to get settings from phone via pebble-clay
-
-// Initialize the default settings
-static void prv_default_settings() {
-  settings.Latitude = 64.8;
-  settings.Longitude = -147;
-  settings.ShowInfo = true;
-  settings.UsePhoneLocation = false;
-}
-
-// Save the settings to persistent storage
-static void prv_save_settings() {
-  persist_write_data(SETTINGS_KEY, &settings, sizeof(settings));
-}
-
-static void prv_load_settings() {
-  // Load the default settings
-  prv_default_settings();
-  // Read settings from persistent storage, if they exist
-  persist_read_data(SETTINGS_KEY, &settings, sizeof(settings));
-}
-
-static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) {
-  // Read lat / lon and other
-  Tuple *latitude_t = dict_find(iter, MESSAGE_KEY_Latitude);
-  if(latitude_t) {
-    settings.Latitude = (float)(latitude_t->value->int32);
-    redo_sky_paths();
-  }
-
-  Tuple *longitude_t = dict_find(iter, MESSAGE_KEY_Longitude);
-  if(longitude_t) {
-    settings.Longitude = (float)(longitude_t->value->int32);
-    redo_sky_paths();
-  }
-
-  // Read boolean preferences
-  Tuple *show_info_t = dict_find(iter, MESSAGE_KEY_ShowInfo);
-  if(show_info_t) {
-    settings.ShowInfo = show_info_t->value->int32 == 1;
-  }
-
-  // Read boolean preferences
-  Tuple *use_phone_location_t = dict_find(iter, MESSAGE_KEY_UsePhoneLocation);
-  if(use_phone_location_t) {
-    settings.UsePhoneLocation = show_info_t->value->int32 == 1;
-  }
-  
-  // The "Dayshift" variable is normally not used, but can be used to test 
-  // the behvaior at other times.  In normal operations, the multiplier of the
-  // slider variable is set to 0 and then the slider is hidden.
-  Tuple *dayshift_t = dict_find(iter, MESSAGE_KEY_Dayshift);
-  if(dayshift_t) {
-    settings.dayshift_secs = (time_t)(0000*(dayshift_t->value->int32)); // multiplier here in seconds
-    redo_sky_paths();
-  }
-  
-  prv_save_settings();
-}
-
 static void load_moon_image() {
   // Get a tm structure
   time_t temp = time(NULL);
   temp += settings.dayshift_secs;
-  uint32_t curr_image_id;
+  uint16_t curr_image_id;
 
   // get lunar day and load new image
   lunar_day = (int)moonPhase(temp);
@@ -377,16 +344,16 @@ static void load_moon_image() {
     if (s_bitmap_moon != NULL) {
       // destroy old moon image  
       gbitmap_destroy(s_bitmap_moon);
-      APP_LOG(APP_LOG_LEVEL_DEBUG, "Deleted old lunar image");
+//      APP_LOG(APP_LOG_LEVEL_DEBUG, "Deleted old lunar image");
     }
     lunar_image_id = curr_image_id;
     s_bitmap_moon = gbitmap_create_with_resource(lunar_image_id);
-    APP_LOG(APP_LOG_LEVEL_DEBUG, "Selected moon image for lunar day (moon phase 0-29) %d", lunar_day);
+//    APP_LOG(APP_LOG_LEVEL_DEBUG, "Selected moon image for lunar day (moon phase 0-29) %d", lunar_day);
   }  
 }
 
 static void load_sun_image() {
-  uint32_t curr_image_id;
+  uint16_t curr_image_id;
 
   // select and solar image
   if (settings.curr_solar_elev_int <= 0)
@@ -398,11 +365,11 @@ static void load_sun_image() {
     if (s_bitmap_sun != NULL) {
       // destroy old moon image  
       gbitmap_destroy(s_bitmap_sun);
-      APP_LOG(APP_LOG_LEVEL_DEBUG, "Deleted old solar image");
+//      APP_LOG(APP_LOG_LEVEL_DEBUG, "Deleted old solar image");
     }
     solar_image_id = curr_image_id;
     s_bitmap_sun = gbitmap_create_with_resource(solar_image_id);
-    APP_LOG(APP_LOG_LEVEL_DEBUG, "Selected new solar image");
+//    APP_LOG(APP_LOG_LEVEL_DEBUG, "Selected new solar image");
   }  
 }
 
@@ -457,7 +424,6 @@ static void update_time() {
                  round_to_int(settings.Latitude), round_to_int(settings.Longitude));
         text_layer_set_text(s_info_layer, s_info_buffer);
         break;
-
     }
   }
   else {
@@ -534,9 +500,9 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
 
   // Draw solar path
   for (i=0;i<24;i++) {
-    point1 = GPoint(hour_to_xpixel(i),angle_to_ypixel(solar_elev[i]));
-    point2 = GPoint(hour_to_xpixel(i+1),angle_to_ypixel(solar_elev[i+1]));
-    if ((solar_elev[i]>0)||(solar_elev[i+1]>0) ) graphics_draw_line(ctx, point1, point2);
+    point1 = GPoint(hour_to_xpixel(i),angle_to_ypixel((float)(solar_elev_x100[i]/100)));
+    point2 = GPoint(hour_to_xpixel(i+1),angle_to_ypixel((float)(solar_elev_x100[i+1]/100)));
+    if ((solar_elev_x100[i]>0)||(solar_elev_x100[i+1]>0) ) graphics_draw_line(ctx, point1, point2);
   }
   // Draw lunar path
   for (i=0;i<24;i++) {
@@ -544,10 +510,10 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     curr_azi_hour = interp_hour(i,0,lunar_hour_shift);
     next_azi_hour = interp_hour(i,0.5,lunar_hour_shift);
     if (next_azi_hour > curr_azi_hour) {            // check to prevent "wrap around"
-      next_elev = interp_elev(lunar_elev[i],lunar_elev[i+1],0.5);
-      point1 = GPoint(hour_to_xpixel(curr_azi_hour),angle_to_ypixel(lunar_elev[i]));
+      next_elev = interp_elev((float)(lunar_elev_x100[i]/100),(float)(lunar_elev_x100[i+1]/100),0.5);
+      point1 = GPoint(hour_to_xpixel(curr_azi_hour),angle_to_ypixel((float)(lunar_elev_x100[i]/100)));
       point2 = GPoint(hour_to_xpixel(next_azi_hour),angle_to_ypixel(next_elev));
-      if ((lunar_elev[i]>0)||(lunar_elev[i+1]>0)) graphics_draw_line(ctx, point1, point2);      
+      if ((lunar_elev_x100[i]>0)||(lunar_elev_x100[i+1]>0)) graphics_draw_line(ctx, point1, point2);      
     }
   }
   
@@ -560,7 +526,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   int hour = curr_time->tm_hour;  
   float frac_hour = ((float)curr_time->tm_min)/60;
   // calculate and store solar position
-  sunPosition(temp, settings.Latitude, settings.Longitude, &curr_azi, &curr_elev);
+  sunPosition(temp, CALC_AZI, &curr_azi, &curr_elev);
   settings.curr_solar_elev_int = round_to_int(curr_elev);
   settings.curr_solar_azi_int = round_to_int(curr_azi);
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Sun [%d:%d]", settings.curr_solar_elev_int, settings.curr_solar_azi_int);
@@ -578,7 +544,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   if (lunar_hour<0) lunar_hour = lunar_hour + 24;
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Moon Hour %d", lunar_hour);
   // calculate and store lunar position
-  moonPosition(temp, settings.Latitude, settings.Longitude, &curr_azi, &curr_elev);
+  moonPosition(temp, CALC_AZI, &curr_azi, &curr_elev);
   settings.curr_lunar_elev_int = round_to_int(curr_elev);
   settings.curr_lunar_azi_int = round_to_int(curr_azi);
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Moon [%d:%d]", settings.curr_lunar_elev_int, settings.curr_lunar_azi_int);
@@ -593,7 +559,62 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   graphics_draw_bitmap_in_rect(ctx, s_bitmap_moon, bitmap_moon_placed);
   
   // Redraw the layer
-  layer_mark_dirty(layer);
+//  layer_mark_dirty(layer);
+}
+
+// code to get settings from phone via pebble-clay
+
+// Initialize the default settings
+static void prv_default_settings() {
+  settings.Latitude = 64.8;
+  settings.Longitude = -147;
+  settings.ShowInfo = true;
+}
+
+// Save the settings to persistent storage
+static void prv_save_settings() {
+  persist_write_data(SETTINGS_KEY, &settings, sizeof(settings));
+}
+
+static void prv_load_settings() {
+  // Load the default settings
+  prv_default_settings();
+  // Read settings from persistent storage, if they exist
+  persist_read_data(SETTINGS_KEY, &settings, sizeof(settings));
+}
+
+static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) {
+  // Read lat / lon and other
+  Tuple *latitude_t = dict_find(iter, MESSAGE_KEY_Latitude);
+  if(latitude_t) {
+    settings.Latitude = (float)(latitude_t->value->int32);
+    redo_sky_paths();
+  }
+
+  Tuple *longitude_t = dict_find(iter, MESSAGE_KEY_Longitude);
+  if(longitude_t) {
+    settings.Longitude = (float)(longitude_t->value->int32);
+    redo_sky_paths();
+  }
+
+  // Read boolean preferences
+  Tuple *show_info_t = dict_find(iter, MESSAGE_KEY_ShowInfo);
+  if(show_info_t) {
+    settings.ShowInfo = show_info_t->value->int32 == 1;
+  }
+
+  // The "Dayshift" variable is normally not used, but can be used to test 
+  // the behvaior at other times.  In normal operations, the multiplier of the
+  // slider variable is set to 0 and then the slider is hidden.
+  Tuple *dayshift_t = dict_find(iter, MESSAGE_KEY_Dayshift);
+  if(dayshift_t) {
+    settings.dayshift_secs = (time_t)(0000*(dayshift_t->value->int32)); // multiplier here in seconds
+    redo_sky_paths();
+  }
+  // redraw watchface
+  update_time();
+  // save settings
+  prv_save_settings();
 }
 
 static void main_window_load(Window *window) {
@@ -708,7 +729,7 @@ static void init() {
   });
 
   // Show the Window on the watch, with animated=true
-  window_stack_push(s_main_window, true);
+  window_stack_push(s_main_window, false);
   
   // Register with TickTimerService
   tick_timer_service_subscribe(MINUTE_UNIT, tick_handler);
@@ -728,7 +749,7 @@ static void init() {
   // get proper sun image
   load_sun_image();
 
-  // Make sure the time is displayed from the start
+  // Display time
   update_time();
 }
 

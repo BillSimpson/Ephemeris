@@ -54,12 +54,15 @@ static AppTimer *debounce_timer;
 #define NO_AZI 0
 #define CALC_AZI 1
 
+#define NUM_INFO_ITEMS 4
+
 // Define our settings struct
 typedef struct ClaySettings {
   float Latitude;
   float Longitude;
   bool ShowInfo;
   time_t dayshift_secs;
+  int info_display;
   int curr_solar_elev_int;
   int curr_solar_azi_int;
   int curr_lunar_elev_int;
@@ -292,13 +295,9 @@ void redo_sky_paths() {
       // determine the growth (waxing vs waning moon)
       if (lunar_offset_hour > 12) {
         lunar_offset_hour = lunar_offset_hour - 24;  // if waning, offset by -24 hours
-//        APP_LOG(APP_LOG_LEVEL_DEBUG, "Moon is waning, lunar offset hour %d",lunar_offset_hour);
-//        APP_LOG(APP_LOG_LEVEL_DEBUG, "  Lunar fine shift x100 = %d",(int)(lunar_fine_shift*100));
       }
-      else {
-//        APP_LOG(APP_LOG_LEVEL_DEBUG, "Moon is waxing, lunar offset hour %d",lunar_offset_hour);
-//        APP_LOG(APP_LOG_LEVEL_DEBUG, "  Lunar fine shift x100 = %d",(int)(lunar_fine_shift*100));
-      }
+      APP_LOG(APP_LOG_LEVEL_DEBUG, "Lunar offset hour %d",lunar_offset_hour);
+      APP_LOG(APP_LOG_LEVEL_DEBUG, "  Lunar fine shift x100 = %d",(int)(lunar_fine_shift*100));
     }
     moonPosition(temp+(time_t)(3600*lunar_offset_hour), NO_AZI, NULL, &elev);
     lunar_elev_x100[i] = (int16_t)(100*elev);
@@ -403,12 +402,12 @@ static void update_time() {
   
   // Update the info text -- if we want to show information
   if (settings.ShowInfo) {
-    switch ((tick_time->tm_min + info_offset) % 4) {
+    switch ((settings.info_display + info_offset) % NUM_INFO_ITEMS) {
       case 0:
         snprintf(s_info_buffer, sizeof(s_info_buffer), PBL_IF_ROUND_ELSE("S [%d:%d]","Sun [%d:%d]"), 
-                 settings.curr_solar_elev_int, settings.curr_solar_azi_int);
+                   settings.curr_solar_elev_int, settings.curr_solar_azi_int);
         text_layer_set_text(s_info_layer, s_info_buffer);
-        break;
+      break;
       case 1:
         snprintf(s_info_buffer, sizeof(s_info_buffer), PBL_IF_ROUND_ELSE("M [%d:%d]","Moon [%d:%d]"),
                  settings.curr_lunar_elev_int, settings.curr_lunar_azi_int);
@@ -416,14 +415,14 @@ static void update_time() {
         break;
       case 2:
         snprintf(s_info_buffer, sizeof(s_info_buffer), PBL_IF_ROUND_ELSE("Moon %dd","Moon %dd old"),
-                 (int)moonPhase(temp));
+                   (int)moonPhase(temp));
         text_layer_set_text(s_info_layer, s_info_buffer);
         break;
       case 3:
         snprintf(s_info_buffer, sizeof(s_info_buffer), PBL_IF_ROUND_ELSE("L:%+d,%+d","Loc:%+d,%+d"),
-                 round_to_int(settings.Latitude), round_to_int(settings.Longitude));
+                round_to_int(settings.Latitude), round_to_int(settings.Longitude));
         text_layer_set_text(s_info_layer, s_info_buffer);
-        break;
+        break;  
     }
   }
   else {
@@ -548,7 +547,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   settings.curr_lunar_elev_int = round_to_int(curr_elev);
   settings.curr_lunar_azi_int = round_to_int(curr_azi);
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Moon [%d:%d]", settings.curr_lunar_elev_int, settings.curr_lunar_azi_int);
-  lunar_hour_shift = lunar_fine_shift + ((float)lunar_hour) / 29.5;
+  lunar_hour_shift = lunar_fine_shift; // + ((float)lunar_hour) / 29.5;
   curr_azi_hour = interp_hour(lunar_hour,frac_hour,lunar_hour_shift);
   
   // If moon is too low, stop lowering its position
@@ -569,10 +568,12 @@ static void prv_default_settings() {
   settings.Latitude = 64.8;
   settings.Longitude = -147;
   settings.ShowInfo = true;
+  settings.info_display = 0;
 }
 
 // Save the settings to persistent storage
 static void prv_save_settings() {
+  settings.info_display = (settings.info_display + info_offset) % NUM_INFO_ITEMS;
   persist_write_data(SETTINGS_KEY, &settings, sizeof(settings));
 }
 
@@ -701,7 +702,7 @@ static void accel_tap_handler(AccelAxisType axis, int32_t direction) {
     info_offset++;
     update_time();
     debounce = true;
-    debounce_timer = app_timer_register(1000, timer_callback, NULL);
+    debounce_timer = app_timer_register(500, timer_callback, NULL);
     APP_LOG(APP_LOG_LEVEL_DEBUG, "Advance Information due to Accel Tap Event");
   }
   else

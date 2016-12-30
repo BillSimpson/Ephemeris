@@ -22,12 +22,14 @@ static int16_t lunar_elev_x100[25];
 static int lunar_offset_hour;
 static float lunar_fine_shift;
 static int lunar_day;
+static int lunar_side = 0;
 static int info_offset = 0;
 static uint16_t lunar_image_id = 0xffff;
 static uint16_t solar_image_id = 0xffff;
 static time_t last_update_unixtime;
 static float last_update_latitude;
 static float last_update_longitude;
+static int last_lunar_side = 0;
 
 // for debouncing
 static bool debounce;
@@ -253,12 +255,29 @@ void redo_sky_paths() {
   bool recalculate = false;
   
   // get today's date in local time  
-  time_t temp = time(NULL);
+  time_t unixtime = time(NULL);
+  unixtime += settings.dayshift_secs;
+  struct tm *curr_time = localtime(&unixtime);
 
   // recalculate if old sky paths are more than an hour old or 0.5 degrees shifted location
-  recalculate = ((temp - last_update_unixtime) > 3600);
+  recalculate = ((unixtime - last_update_unixtime) > 3600);
   recalculate = recalculate || (fabs_pebble((settings.Latitude - last_update_latitude))>0.5 );
   recalculate = recalculate || (fabs_pebble((settings.Longitude - last_update_longitude))>0.5 );  
+  
+  // check lunar side 
+  // +1 means lunar display hour > solar display hour; moon ahead of sun
+  // -1 means lunar display hour < solar display hour; moon behind (earlier than) sun
+  
+  float solar_display_hour = (float)curr_time->tm_hour + (float)curr_time->tm_min/60;
+  float lunar_display_hour = fmod_pebble(solar_display_hour -
+                             24*moonPhase(unixtime)*(SECS_IN_DAY)/((float)MOONPERIOD_SEC),24);
+  if (lunar_display_hour > solar_display_hour)
+    lunar_side = -1;
+  else  
+    lunar_side = +1;
+  
+  // recalculate if lunar side switched
+  recalculate = recalculate || (lunar_side != last_lunar_side);
   
   if (!recalculate) {
     APP_LOG(APP_LOG_LEVEL_DEBUG,"avoided recalculation");    
@@ -266,45 +285,50 @@ void redo_sky_paths() {
   }
 
   // store this as last calculation
-  last_update_unixtime = temp;
+  last_update_unixtime = unixtime;
   last_update_latitude = settings.Latitude;
   last_update_longitude = settings.Longitude;  
+  last_lunar_side = lunar_side; 
   
-  temp += settings.dayshift_secs;
-  struct tm *curr_time = localtime(&temp);
-  // set hour, minute, and second to 0, so that we'll calculate hourly
+  // calculate lunar shift
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "Solar %d, Lunar %d hours",(int)solar_display_hour, (int)lunar_display_hour);
+  lunar_fine_shift = -24*moonPhase(unixtime)*(SECS_IN_DAY)/((float)MOONPERIOD_SEC);
+  if (lunar_fine_shift < -12)
+      lunar_fine_shift += 24;  // condition to be in range -12 to +12 hours
+  float lunar_day_shift = 0;
+  if ((lunar_fine_shift < 0) && (lunar_side == -1)) {// sun wrapped, go back a day for moon
+    lunar_day_shift = -1;
+    APP_LOG(APP_LOG_LEVEL_DEBUG, "Sun wrapped, going back a day for moon");
+  }  
+  if ((lunar_fine_shift > 0) && (lunar_side == +1)) { // sun wrapped, go forward a day for moon
+    lunar_day_shift = +1;
+    APP_LOG(APP_LOG_LEVEL_DEBUG, "Moon wrapped, going forward a day for moon");
+  } 
+  lunar_offset_hour = round_to_int(lunar_fine_shift);
+  lunar_fine_shift = lunar_fine_shift - (float)lunar_offset_hour;
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "Lunar offset hour %d",lunar_offset_hour);
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "  Lunar fine shift x100 = %d",(int)(lunar_fine_shift*100));
+  
+  // set hour, minute, and second to 0, so that we'll calculate hourly starting at midnight
   curr_time->tm_min = 0;
   curr_time->tm_sec = 0;
   curr_time->tm_hour = 0;
-  temp = mktime(curr_time);
+  unixtime = mktime(curr_time);
 
   // cycle through 25 hours for solar and lunar parameters
   i = 0;
 //  APP_LOG(APP_LOG_LEVEL_DEBUG,"lat,lon [%d:%d]", (int)settings.Latitude, (int)settings.Longitude);
   do {
     // Solar calculation
-    sunPosition(temp, NO_AZI, &azi, &elev);
+    sunPosition(unixtime, NO_AZI, &azi, &elev);
     solar_elev_x100[i] = (int16_t)(100*elev);
 //    APP_LOG(APP_LOG_LEVEL_DEBUG, "hour %d Solar: Elev %d", i, (int)elev);
     // Lunar calculation
-    
-    if (i==0) {
-      lunar_fine_shift = 24*moonPhase(temp)*(SECS_IN_DAY)/((float)MOONPERIOD_SEC);
-      lunar_offset_hour = round_to_int(lunar_fine_shift);
-      lunar_fine_shift = lunar_fine_shift - (float)lunar_offset_hour;
-      // determine the growth (waxing vs waning moon)
-      if (lunar_offset_hour > 12) {
-        lunar_offset_hour = lunar_offset_hour - 24;  // if waning, offset by -24 hours
-      }
-      APP_LOG(APP_LOG_LEVEL_DEBUG, "Lunar offset hour %d",lunar_offset_hour);
-      APP_LOG(APP_LOG_LEVEL_DEBUG, "  Lunar fine shift x100 = %d",(int)(lunar_fine_shift*100));
-    }
-    moonPosition(temp+(time_t)(3600*lunar_offset_hour), NO_AZI, NULL, &elev);
+    moonPosition(unixtime+(time_t)(-3600*lunar_offset_hour + 86400*lunar_day_shift), NO_AZI, NULL, &elev);
     lunar_elev_x100[i] = (int16_t)(100*elev);
 //    APP_LOG(APP_LOG_LEVEL_DEBUG, "  Hr %d  Lunar: Elev %d", i, (int)elev);
 
-    // advance to the next hour
-    temp = temp + 3600;
+    unixtime += 3600;     // advance to the next hour and next point
     i++;
   }
   while (i<25);
@@ -313,12 +337,12 @@ void redo_sky_paths() {
 
 static void load_moon_image() {
   // Get a tm structure
-  time_t temp = time(NULL);
-  temp += settings.dayshift_secs;
+  time_t unixtime = time(NULL);
+  unixtime += settings.dayshift_secs;
   uint16_t curr_image_id;
 
   // get lunar day and load new image
-  lunar_day = (int)moonPhase(temp);
+  lunar_day = (int)moonPhase(unixtime);  // truncate (do not round) the result
 
   if (lunar_day < 3)
     curr_image_id = RESOURCE_ID_IMAGE_MOON1;
@@ -374,9 +398,9 @@ static void load_sun_image() {
 
 static void update_time() {
   // Get a tm structure
-  time_t temp = time(NULL);
-  temp += settings.dayshift_secs;
-  struct tm *tick_time = localtime(&temp);
+  time_t unixtime = time(NULL);
+  unixtime += settings.dayshift_secs;
+  struct tm *tick_time = localtime(&unixtime);
 
   // Write the current hours and minutes into a buffer
   static char s_buffer[8];
@@ -415,7 +439,7 @@ static void update_time() {
         break;
       case 2:
         snprintf(s_info_buffer, sizeof(s_info_buffer), PBL_IF_ROUND_ELSE("Moon %dd","Moon %dd old"),
-                   (int)moonPhase(temp));
+                   (int)moonPhase(unixtime));
         text_layer_set_text(s_info_layer, s_info_buffer);
         break;
       case 3:
@@ -429,18 +453,6 @@ static void update_time() {
     snprintf(s_info_buffer, sizeof(s_info_buffer), " ");
     text_layer_set_text(s_info_layer, s_info_buffer);
   }
-
-  // if it is an 00:01, re-calculate the sun and moon ephemeris
-  if ((tick_time->tm_hour == 0)&&(tick_time->tm_min == 1)) {
-    // re-calculate skypaths
-    redo_sky_paths();
-    APP_LOG(APP_LOG_LEVEL_DEBUG, "Midnight (00:01) ephemeris");
-  }
-  // load a moon image (maybe a new one)
-  load_moon_image();
-  // load a sun image (maybe a new one)
-  load_sun_image();  
-  
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Updated screen");
 }
 
@@ -465,7 +477,7 @@ float interp_azi(float curr_azi, float next_azi, float frac_hour) {
 }
 
 float interp_hour (int hour, float frac_hour, float offset) {
-  return (fmod_pebble(((float)hour + frac_hour - offset),24));
+  return (fmod_pebble(((float)hour + frac_hour + offset),24));
 }
 
 int angle_to_ypixel (float angle) {
@@ -474,15 +486,20 @@ int angle_to_ypixel (float angle) {
   if (range>110) range = 110;
   int top = (90 - fabs_pebble(settings.Latitude) + 23.5) * 1.05;  // this gives a 30% buffer below the horizon.
   if (top>90) top = 90;
-  return (int)((top-angle)/range * graph_height);
+  return (int)(((top-angle)*graph_height)/range);
 }
 
 static void canvas_update_proc(Layer *layer, GContext *ctx) {
   // Custom drawing happens here!
   int i;
   GPoint point1, point2;
-  float curr_elev, curr_azi, next_elev, curr_azi_hour, next_azi_hour, lunar_hour_shift;
+  float curr_elev, curr_azi, next_elev, curr_azi_hour, next_azi_hour;
   
+  // Get the time and a tm structure
+  time_t curr_unixtime = time(NULL);
+  curr_unixtime += settings.dayshift_secs;
+  struct tm *curr_time = localtime(&curr_unixtime);
+
   // Set the line color
   graphics_context_set_stroke_color(ctx, GColorWhite);
   // Set the stroke width (must be an odd integer value)
@@ -492,22 +509,16 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   // Set the compositing mode (GCompOpSet is required for transparency)
   graphics_context_set_compositing_mode(ctx, GCompOpSet);
   
-  // Get the time and a tm structure
-  time_t temp = time(NULL);
-  temp += settings.dayshift_secs;
-  struct tm *curr_time = localtime(&temp);
-
   // Draw solar path
   for (i=0;i<24;i++) {
     point1 = GPoint(hour_to_xpixel(i),angle_to_ypixel((float)(solar_elev_x100[i]/100)));
     point2 = GPoint(hour_to_xpixel(i+1),angle_to_ypixel((float)(solar_elev_x100[i+1]/100)));
     if ((solar_elev_x100[i]>0)||(solar_elev_x100[i+1]>0) ) graphics_draw_line(ctx, point1, point2);
   }
-  // Draw lunar path
+  // Draw lunar path (dashed line)
   for (i=0;i<24;i++) {
-    lunar_hour_shift = lunar_fine_shift;   // + ((float)i) / 29.5;
-    curr_azi_hour = interp_hour(i,0,lunar_hour_shift);
-    next_azi_hour = interp_hour(i,0.5,lunar_hour_shift);
+    curr_azi_hour = interp_hour(i,0,lunar_fine_shift);
+    next_azi_hour = interp_hour(i,0.5,lunar_fine_shift);
     if (next_azi_hour > curr_azi_hour) {            // check to prevent "wrap around"
       next_elev = interp_elev((float)(lunar_elev_x100[i]/100),(float)(lunar_elev_x100[i+1]/100),0.5);
       point1 = GPoint(hour_to_xpixel(curr_azi_hour),angle_to_ypixel((float)(lunar_elev_x100[i]/100)));
@@ -520,17 +531,19 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   GRect horizon_box = GRect(hour_to_xpixel(0),angle_to_ypixel(0),hour_to_xpixel(24),28);
   // Draw the horizon box
   graphics_draw_bitmap_in_rect(ctx, s_bitmap_horizon, horizon_box);
-  
+
   // Calculate sun position
   int hour = curr_time->tm_hour;  
   float frac_hour = ((float)curr_time->tm_min)/60;
   // calculate and store solar position
-  sunPosition(temp, CALC_AZI, &curr_azi, &curr_elev);
+  sunPosition(curr_unixtime, CALC_AZI, &curr_azi, &curr_elev);
   settings.curr_solar_elev_int = round_to_int(curr_elev);
   settings.curr_solar_azi_int = round_to_int(curr_azi);
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Sun [%d:%d]", settings.curr_solar_elev_int, settings.curr_solar_azi_int);
+  // having calculated the solar elevation, load a sun image (maybe a new one)
+  load_sun_image();  
+  // calculate the display azimuth hour
   curr_azi_hour = interp_hour(hour,frac_hour,0);
- 
   // If sun is too low, stop lowering its position
   if (curr_elev < -7) curr_elev = -7;
   // Get the location to place the sun
@@ -539,26 +552,24 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   graphics_draw_bitmap_in_rect(ctx, s_bitmap_sun, bitmap_placed);
 
   // Now calculate moon position
-  int lunar_hour = (hour - lunar_offset_hour) % 24;
+  int lunar_hour = (hour + lunar_offset_hour) % 24;
   if (lunar_hour<0) lunar_hour = lunar_hour + 24;
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Moon Hour %d", lunar_hour);
   // calculate and store lunar position
-  moonPosition(temp, CALC_AZI, &curr_azi, &curr_elev);
+  moonPosition(curr_unixtime, CALC_AZI, &curr_azi, &curr_elev);
   settings.curr_lunar_elev_int = round_to_int(curr_elev);
   settings.curr_lunar_azi_int = round_to_int(curr_azi);
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Moon [%d:%d]", settings.curr_lunar_elev_int, settings.curr_lunar_azi_int);
-  lunar_hour_shift = lunar_fine_shift; // + ((float)lunar_hour) / 29.5;
-  curr_azi_hour = interp_hour(lunar_hour,frac_hour,lunar_hour_shift);
-  
+  // load a moon image (maybe a new one)
+  load_moon_image();
+  // calculate the lunar azimith hour for display
+  curr_azi_hour = interp_hour(lunar_hour,frac_hour,lunar_fine_shift);
   // If moon is too low, stop lowering its position
   if (curr_elev < -7) curr_elev = -7;
   // Get the location to place the moon
   GRect bitmap_moon_placed = GRect(hour_to_xpixel(curr_azi_hour)-6,angle_to_ypixel(curr_elev)-6,13,13);
   // Draw the image
   graphics_draw_bitmap_in_rect(ctx, s_bitmap_moon, bitmap_moon_placed);
-  
-  // Redraw the layer
-//  layer_mark_dirty(layer);
 }
 
 // code to get settings from phone via pebble-clay

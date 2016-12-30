@@ -56,9 +56,9 @@ module.exports = [
 //        "messageKey": "Dayshift",
 //        "defaultValue": "0",
 //        "label": "Shift time by hours",
-//        "min": -24,
-//        "max": 24,
-//        "step": 1
+//        "min": -300,
+//        "max": 300,
+//        "step": 3
 //      },
     ]
   },

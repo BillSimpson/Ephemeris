@@ -37,25 +37,22 @@ static AppTimer *debounce_timer;
 
 // Persistent storage key
 #define SETTINGS_KEY 1
-
 // date/time constants and conversions
 #define PI 3.14159268
-
 #define DEG2RAD 0.017453293
 #define RAD2DEG 57.29577903
 // degrees to radians = pi / 180 and rad to deg = 180 / pi
-
 #define J2000 946684800
 // year 2000 in unix time
-
 #define MOONPERIOD_SEC 2551443
-
+#define MOONPERIOD_DAYS 29.530587981
+#define TILT_OF_EARTH 23.4397
 #define SECS_IN_DAY 86400
 // day in seconds = 24*60*60
-
+#define SECS_IN_HOUR 3600
+// hour in seconds = 60*60
 #define NO_AZI 0
 #define CALC_AZI 1
-
 #define NUM_INFO_ITEMS 4
 
 // Define our settings struct
@@ -141,7 +138,7 @@ float toDays(time_t unixdate) {
 
 // general calculations for position
 
-float e = DEG2RAD * 23.4397; // obliquity of the Earth
+float e = DEG2RAD * TILT_OF_EARTH; 
 
 float rightAscension(float l, float b) {
   return atan2_pebble(sin_pebble(l) * cos_pebble(e) - sin_pebble(b)/cos_pebble(b) * sin_pebble(e), cos_pebble(l));
@@ -260,7 +257,7 @@ void redo_sky_paths() {
   struct tm *curr_time = localtime(&unixtime);
 
   // recalculate if old sky paths are more than an hour old or 0.5 degrees shifted location
-  recalculate = ((unixtime - last_update_unixtime) > 3600);
+  recalculate = ((unixtime - last_update_unixtime) > SECS_IN_HOUR);
   recalculate = recalculate || (fabs_pebble((settings.Latitude - last_update_latitude))>0.5 );
   recalculate = recalculate || (fabs_pebble((settings.Longitude - last_update_longitude))>0.5 );  
   
@@ -324,11 +321,11 @@ void redo_sky_paths() {
     solar_elev_x100[i] = (int16_t)(100*elev);
 //    APP_LOG(APP_LOG_LEVEL_DEBUG, "hour %d Solar: Elev %d", i, (int)elev);
     // Lunar calculation
-    moonPosition(unixtime+(time_t)(-3600*lunar_offset_hour + 86400*lunar_day_shift), NO_AZI, NULL, &elev);
+    moonPosition(unixtime+(time_t)(-SECS_IN_HOUR*lunar_offset_hour + 86400*lunar_day_shift), NO_AZI, NULL, &elev);
     lunar_elev_x100[i] = (int16_t)(100*elev);
 //    APP_LOG(APP_LOG_LEVEL_DEBUG, "  Hr %d  Lunar: Elev %d", i, (int)elev);
 
-    unixtime += 3600;     // advance to the next hour and next point
+    unixtime += SECS_IN_HOUR;     // advance to the next hour and next point
     i++;
   }
   while (i<25);
@@ -482,9 +479,9 @@ float interp_hour (int hour, float frac_hour, float offset) {
 
 int angle_to_ypixel (float angle) {
   // set y scale based upon latitude
-  int range = (90 - fabs_pebble(settings.Latitude) + 23.5) * 1.35;  // full graph 135% of the potential range at that lat
+  int range = (90 - fabs_pebble(settings.Latitude) + TILT_OF_EARTH) * 1.35;  // full graph 135% of the potential range at that lat
   if (range>110) range = 110;
-  int top = (90 - fabs_pebble(settings.Latitude) + 23.5) * 1.05;  // this gives a 30% buffer below the horizon.
+  int top = (90 - fabs_pebble(settings.Latitude) + TILT_OF_EARTH) * 1.05;  // this gives a 30% buffer below the horizon.
   if (top>90) top = 90;
   return (int)(((top-angle)*graph_height)/range);
 }
